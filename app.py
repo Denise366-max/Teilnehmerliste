@@ -1,14 +1,14 @@
 import streamlit as st
-import requests
 import pandas as pd
+import requests
 from io import BytesIO
-import re
 
-API_TOKEN = "dfaec32a80975c26802ef8fcf68bf4cc72990046"
-BASE_URL = "https://api.pipedrive.com/v1"
+# API-Konfiguration aus Streamlit Secrets
+API_TOKEN = st.secrets["API_TOKEN"]
+BASE_URL = st.secrets["BASE_URL"]
 
-# Mapping von Custom Field API-Key → Teilnehmer-Namen
-CUSTOM_FIELD_MAPPING = {
+# Die Custom-Field-IDs mit Klartext-Namen verknüpfen
+custom_fields = {
     "b94970cec0683f8f5cadf4d3fab7079744ac28bb": "Teilnehmer 1",
     "fd69701c7c53f9854ad1df204cd81da18111a072": "Teilnehmer 2",
     "179be66b310cfbf4d1767437563e6fc902714c9a": "Teilnehmer 3",
@@ -29,75 +29,62 @@ CUSTOM_FIELD_MAPPING = {
     "214f05f31ed7d6bc7fac9dd51ef893c3a151462b": "Teilnehmer 18",
 }
 
-def get_deal_data(deal_id):
-    url = f"{BASE_URL}/deals/{deal_id}?api_token={API_TOKEN}"
-    response = requests.get(url)
-    if response.status_code != 200:
-        st.error(f"Fehler beim Abrufen des Deals: {response.status_code}")
-        return None
-    return response.json()
-
-def extract_custom_participants(deal_json):
-    if not deal_json or not deal_json.get("success"):
-        return []
-
-    deal_data = deal_json["data"]
-    participants = []
-
-    for field_key, label in CUSTOM_FIELD_MAPPING.items():
-        value = deal_data.get(field_key)
-        if not value:
-            continue
-
-        name = ""
-        email = ""
-
-        if isinstance(value, dict):
-            name = value.get("name", "")
-            emails = value.get("email", [])
-            if isinstance(emails, list):
-                for e in emails:
-                    if e.get("value"):
-                        email = e["value"]
-                        break
-            elif isinstance(emails, str):
-                email = emails
-        elif isinstance(value, str):
-            name = value
-
-        participants.append({
-            "Teilnehmer": label,
-            "Name": name,
-            "E-Mail": email
-        })
-
-    return participants
-
-st.title("Nur Custom Teilnehmerfelder aus Pipedrive Deal")
+st.title("Pipedrive Teilnehmerliste generieren")
 
 deal_id = st.text_input("Bitte Deal-ID eingeben:")
 
-if st.button("Teilnehmer laden und Excel erstellen") and deal_id:
-    deal_json = get_deal_data(deal_id)
-    participants = extract_custom_participants(deal_json)
-
-    if not participants:
-        st.error("Keine Teilnehmer gefunden.")
+def get_deal_data(deal_id):
+    url = f"{BASE_URL}/deals/{deal_id}?api_token={API_TOKEN}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json().get("data")
     else:
-        df = pd.DataFrame(participants)
-        st.dataframe(df)
+        return None
 
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False)
-        buffer.seek(0)
+if st.button("Daten abrufen und Excel erstellen"):
+    if not deal_id:
+        st.error("Bitte eine Deal-ID eingeben.")
+    else:
+        deal_data = get_deal_data(deal_id)
 
-        deal_title = deal_json["data"].get("title", "deal")
-        filename = re.sub(r"[^a-zA-Z0-9_-]", "_", deal_title) + "_teilnehmer.xlsx"
+        if not deal_data:
+            st.error("Deal nicht gefunden oder Fehler bei der Abfrage.")
+        else:
+            teilnehmer_liste = []
 
-        st.download_button(
-            label="Excel herunterladen",
-            data=buffer,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            for field_id, teilnehmer_name in custom_fields.items():
+                person_info = deal_data.get(field_id)
+                if isinstance(person_info, dict):
+                    name = person_info.get("name", "")
+                    emails = person_info.get("email", [])
+                    email = ""
+
+                    if emails and isinstance(emails, list):
+                        for e in emails:
+                            if e.get("value"):
+                                email = e["value"]
+                                break
+
+                    teilnehmer_liste.append({
+                        "Teilnehmer": teilnehmer_name,
+                        "Name": name,
+                        "E-Mail": email
+                    })
+
+            if teilnehmer_liste:
+                df = pd.DataFrame(teilnehmer_liste)
+                st.dataframe(df)
+
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    df.to_excel(writer, index=False)
+                buffer.seek(0)
+
+                st.download_button(
+                    label="Excel herunterladen",
+                    data=buffer,
+                    file_name=f"deal_{deal_id}_teilnehmer.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("Keine Teilnehmerdaten gefunden.")
